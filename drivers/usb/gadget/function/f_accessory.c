@@ -1459,7 +1459,7 @@ EXPORT_SYMBOL_GPL(acc_disconnect);
 
 void notify_hid_iap_start(void)
 {	
-	schedule_work(&get_acc_dev->hid_iap_start_work);
+	schedule_work(&dev->hid_iap_start_work);
 }
 EXPORT_SYMBOL_GPL(notify_hid_iap_start);
 
