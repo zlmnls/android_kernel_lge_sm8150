@@ -98,7 +98,7 @@ struct f_hidg {
 
 	struct usb_ep			*in_ep;
 	struct usb_ep			*out_ep;
-
+	bool				bound;
 #ifdef CONFIG_LGE_USB_GADGET
 	bool				is_charge;
 #endif
