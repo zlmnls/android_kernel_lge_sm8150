@@ -1461,13 +1461,8 @@ EXPORT_SYMBOL_GPL(acc_disconnect);
 
 void notify_hid_iap_start(void)
 {
-    struct acc_dev *dev = get_acc_dev();
-    if (!dev)
-        return;
-
-    schedule_work(&dev->hid_iap_start_work);
-
-    put_acc_dev(dev); // 确保配对的引用计数释放
+	struct acc_dev *dev = get_acc_dev();
+	schedule_work(&dev->hid_iap_start_work);
 }
 EXPORT_SYMBOL_GPL(notify_hid_iap_start);
 
