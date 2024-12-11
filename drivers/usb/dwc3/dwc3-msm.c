@@ -3621,10 +3621,7 @@ static int dwc3_msm_vbus_notifier(struct notifier_block *nb,
 		return NOTIFY_DONE;
 
 	if (!mdwc->usb_data_enabled) {
-		if (event)
-			dwc3_msm_gadget_vbus_draw(mdwc, 500);
-		else
-			dwc3_msm_gadget_vbus_draw(mdwc, 0);
+
 		return NOTIFY_DONE;
 	}
 
@@ -5469,6 +5466,7 @@ static int dwc3_msm_pm_suspend(struct device *dev)
 
 	dev_dbg(dev, "dwc3-msm PM suspend\n");
 	dbg_event(0xFF, "PM Sus", 0);
+	flush_workqueue(mdwc->dwc3_wq);
 
 	/*
 	 * Check if pm_suspend can proceed irrespective of runtimePM state of
@@ -5500,7 +5498,7 @@ static int dwc3_msm_pm_resume(struct device *dev)
 
 	dev_dbg(dev, "dwc3-msm PM resume\n");
 	dbg_event(0xFF, "PM Res", 0);
-
+	flush_workqueue(mdwc->dwc3_wq);
 	atomic_set(&mdwc->pm_suspended, 0);
 
 	if (atomic_read(&dwc->in_lpm) &&
@@ -5536,7 +5534,7 @@ static int dwc3_msm_pm_freeze(struct device *dev)
 
 	dev_dbg(dev, "dwc3-msm PM freeze\n");
 	dbg_event(0xFF, "PM Freeze", 0);
-
+	flush_workqueue(mdwc->dwc3_wq);
 	/*
 	 * Check if pm_freeze can proceed irrespective of runtimePM state of
 	 * host.
@@ -5581,7 +5579,7 @@ static int dwc3_msm_pm_restore(struct device *dev)
 
 	dev_dbg(dev, "dwc3-msm PM restore\n");
 	dbg_event(0xFF, "PM Restore", 0);
-
+	flush_workqueue(mdwc->dwc3_wq);
 	atomic_set(&mdwc->pm_suspended, 0);
 
 	if (!dwc->ignore_wakeup_src_in_hostmode || !mdwc->in_host_mode) {
