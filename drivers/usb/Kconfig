@@ -136,6 +136,11 @@ source "drivers/usb/isp1760/Kconfig"
 
 comment "USB port drivers"
 
+config USB_OKCAR
+	tristate "USB_OKCAR"	
+	help
+          Say Y here to enable Usb Okcar Kernel Api
+
 if USB
 
 config USB_USS720
