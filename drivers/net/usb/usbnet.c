@@ -913,7 +913,7 @@ int usbnet_stop (struct net_device *net)
 	dev->flags = 0;
 	del_timer_sync (&dev->delay);
 	tasklet_kill (&dev->bh);
-	cancel_work_sync(&dev->kevent);
+
 	if (!pm)
 		usb_autopm_put_interface(dev->intf);
 
@@ -1720,11 +1720,7 @@ void usbnet_disconnect (struct usb_interface *intf)
 	cancel_delayed_work_sync(&dev->fake_netconnect_kevent);
 	usb_scuttle_anchored_urbs(&dev->deferred);
 
-	while ((urb = usb_get_from_anchor(&dev->deferred))) {
-		dev_kfree_skb(urb->context);
-		kfree(urb->sg);
-		usb_free_urb(urb);
-	}
+
 
 	if (dev->driver_info->unbind)
 		dev->driver_info->unbind (dev, intf);
@@ -1880,9 +1876,7 @@ usbnet_probe (struct usb_interface *udev, const struct usb_device_id *prod)
 	} else if (!info->in || !info->out)
 		status = usbnet_get_endpoints (dev, udev);
 	else {
-		u8 ep_addrs[3] = {
-			info->in + USB_DIR_IN, info->out + USB_DIR_OUT, 0
-		};
+
 
 		dev->in = usb_rcvbulkpipe (xdev, info->in);
 		dev->out = usb_sndbulkpipe (xdev, info->out);
@@ -1893,8 +1887,7 @@ usbnet_probe (struct usb_interface *udev, const struct usb_device_id *prod)
 		else
 			status = 0;
 
-		if (status == 0 && !usb_check_bulk_endpoints(udev, ep_addrs))
-			status = -EINVAL;
+
 	}
 	if (status >= 0 && dev->status)
 		status = init_status (dev, udev);
@@ -2127,7 +2120,7 @@ static int __usbnet_read_cmd(struct usbnet *dev, u8 cmd, u8 reqtype,
 		   cmd, reqtype, value, index, size);
 
 	if (size) {
-		buf = kmalloc(size, GFP_NOIO);
+		buf = kmalloc(size, GFP_KERNEL);
 		if (!buf)
 			goto out;
 	}
@@ -2159,7 +2152,7 @@ static int __usbnet_write_cmd(struct usbnet *dev, u8 cmd, u8 reqtype,
 		   cmd, reqtype, value, index, size);
 
 	if (data) {
-		buf = kmemdup(data, size, GFP_NOIO);
+		buf = kmemdup(data, size, GFP_KERNEL);
 		if (!buf)
 			goto out;
 	} else {
@@ -2260,7 +2253,7 @@ static void usbnet_async_cmd_cb(struct urb *urb)
 int usbnet_write_cmd_async(struct usbnet *dev, u8 cmd, u8 reqtype,
 			   u16 value, u16 index, const void *data, u16 size)
 {
-	struct usb_ctrlrequest *req;
+	struct usb_ctrlrequest *req = NULL;
 	struct urb *urb;
 	int err = -ENOMEM;
 	void *buf = NULL;
@@ -2278,7 +2271,7 @@ int usbnet_write_cmd_async(struct usbnet *dev, u8 cmd, u8 reqtype,
 		if (!buf) {
 			netdev_err(dev->net, "Error allocating buffer"
 				   " in %s!\n", __func__);
-			goto fail_free_urb;
+			goto fail_free;
 		}
 	}
 
@@ -2302,12 +2295,11 @@ int usbnet_write_cmd_async(struct usbnet *dev, u8 cmd, u8 reqtype,
 	if (err < 0) {
 		netdev_err(dev->net, "Error submitting the control"
 			   " message: status=%d\n", err);
-		goto fail_free_all;
+		goto fail_free;
 	}
 	return 0;
 
-fail_free_all:
-	kfree(req);
+
 fail_free_buf:
 	kfree(buf);
 	/*
@@ -2315,8 +2307,9 @@ fail_free_buf:
 	 * needed because the flag can be set only
 	 * after filling the URB
 	 */
-	urb->transfer_flags = 0;
-fail_free_urb:
+
+fail_free:
+	kfree(req);
 	usb_free_urb(urb);
 fail:
 	return err;
