@@ -396,6 +396,7 @@ static void acc_complete_set_string(struct usb_ep *ep, struct usb_request *req)
 	struct acc_dev	*dev = ep->driver_data;
 	char *string_dest = NULL;
 	int length = req->actual;
+	unsigned long flags;
 
 	if (req->status != 0) {
 		pr_err("acc_complete_set_string, err %d\n", req->status);
@@ -421,22 +422,19 @@ static void acc_complete_set_string(struct usb_ep *ep, struct usb_request *req)
 	case ACCESSORY_STRING_SERIAL:
 		string_dest = dev->serial;
 		break;
-	}
-	if (string_dest) {
-		unsigned long flags;
-
-		if (length >= ACC_STRING_SIZE)
-			length = ACC_STRING_SIZE - 1;
-
-		spin_lock_irqsave(&dev->lock, flags);
-		memcpy(string_dest, req->buf, length);
-		/* ensure zero termination */
-		string_dest[length] = 0;
-		spin_unlock_irqrestore(&dev->lock, flags);
-	} else {
+	default:
 		pr_err("unknown accessory string index %d\n",
-			dev->string_index);
+					dev->string_index);
+		return;
 	}
+	if (length >= ACC_STRING_SIZE)
+		length = ACC_STRING_SIZE - 1;
+
+	spin_lock_irqsave(&dev->lock, flags);
+	memcpy(string_dest, req->buf, length);
+	/* ensure zero termination */
+	string_dest[length] = 0;
+	spin_unlock_irqrestore(&dev->lock, flags);
 }
 
 static void acc_complete_set_hid_report_desc(struct usb_ep *ep,
@@ -609,7 +607,7 @@ static int create_bulk_endpoints(struct acc_dev *dev,
 	struct usb_ep *ep;
 	int i;
 
-	DBG(cdev, "%s dev: %pK\n", __func__, dev);
+	DBG(cdev, "create_bulk_endpoints dev: %pK\n", dev);
 
 	ep = usb_ep_autoconfig(cdev->gadget, in_desc);
 	if (!ep) {
@@ -628,19 +626,36 @@ static int create_bulk_endpoints(struct acc_dev *dev,
 	DBG(cdev, "usb_ep_autoconfig for ep_out got %s\n", ep->name);
 	ep->driver_data = dev;		/* claim the endpoint */
 	dev->ep_out = ep;
-
+retry_tx_alloc:
 	/* now allocate requests for our endpoints */
 	for (i = 0; i < TX_REQ_MAX; i++) {
-		req = acc_request_new(dev->ep_in, BULK_BUFFER_SIZE);
-		if (!req)
-			goto fail;
+		req = acc_request_new(dev->ep_in, acc_tx_req_len);
+		if (!req) {
+			if (acc_tx_req_len <= BULK_BUFFER_SIZE)
+				goto fail;
+			while ((req = req_get(dev, &dev->tx_idle)))
+				acc_request_free(req, dev->ep_in);
+			acc_tx_req_len /= 2;
+			goto retry_tx_alloc;
+		}
 		req->complete = acc_complete_in;
 		req_put(dev, &dev->tx_idle, req);
 	}
+
+retry_rx_alloc:
 	for (i = 0; i < RX_REQ_MAX; i++) {
-		req = acc_request_new(dev->ep_out, BULK_BUFFER_SIZE);
-		if (!req)
-			goto fail;
+		req = acc_request_new(dev->ep_out, acc_rx_req_len);
+		if (!req) {
+			if (acc_rx_req_len <= BULK_BUFFER_SIZE)
+				goto fail;
+			for (i = 0; i < RX_REQ_MAX; i++) {
+				acc_request_free(dev->rx_req[i],
+						dev->ep_out);
+				dev->rx_req[i] = NULL;
+			}
+			acc_rx_req_len /= 2;
+			goto retry_rx_alloc;
+		}
 		req->complete = acc_complete_out;
 		dev->rx_req[i] = req;
 	}
@@ -664,8 +679,7 @@ static ssize_t acc_read(struct file *fp, char __user *buf,
 {
 	struct acc_dev *dev = fp->private_data;
 	struct usb_request *req;
-	ssize_t r = count, xfer;
-	ssize_t data_length;
+	ssize_t r = count, xfer,len;
 	int ret = 0;
 
 	pr_debug("acc_read(%zu)\n", count);
@@ -686,20 +700,7 @@ static ssize_t acc_read(struct file *fp, char __user *buf,
 		goto done;
 	}
 
-	if (!dev->rx_req[0]) {
-		pr_warn("acc_read: USB request already handled/freed");
-		r = -EINVAL;
-		goto done;
-	}
-
-	/*
-	 * Calculate the data length by considering termination character.
-	 * Then compansite the difference of rounding up to
-	 * integer multiple of maxpacket size.
-	 */
-	data_length = count;
-	data_length += dev->ep_out->maxpacket - 1;
-	data_length -= data_length % dev->ep_out->maxpacket;
+	len = ALIGN(count, dev->ep_out->maxpacket);
 
 	if (dev->rx_done) {
 		// last req cancelled. try to get it.
@@ -710,7 +711,7 @@ static ssize_t acc_read(struct file *fp, char __user *buf,
 requeue_req:
 	/* queue a request */
 	req = dev->rx_req[0];
-	req->length = data_length;
+	req->length = len;
 	dev->rx_done = 0;
 	ret = usb_ep_queue(dev->ep_out, req, GFP_KERNEL);
 	if (ret < 0) {
@@ -770,15 +771,15 @@ static ssize_t acc_write(struct file *fp, const char __user *buf,
 	}
 
 	while (count > 0) {
-		/* get an idle tx request to use */
-		req = 0;
-		ret = wait_event_interruptible(dev->write_wq,
-			((req = req_get(dev, &dev->tx_idle)) || !dev->online));
-		if (!dev->online || dev->disconnected) {
+		if (!dev->online) {
 			pr_debug("acc_write dev->error\n");
 			r = -EIO;
 			break;
 		}
+		/* get an idle tx request to use */
+		req = 0;
+		ret = wait_event_interruptible(dev->write_wq,
+			((req = req_get(dev, &dev->tx_idle)) || !dev->online));
 
 		if (!req) {
 			r = ret;
@@ -821,6 +822,7 @@ static ssize_t acc_write(struct file *fp, const char __user *buf,
 
 	pr_debug("acc_write returning %zd\n", r);
 	return r;
+	
 }
 
 static long acc_ioctl(struct file *fp, unsigned code, unsigned long value)
@@ -993,13 +995,6 @@ int acc_ctrlrequest(struct usb_composite_dev *cdev,
 	 */
 	if (!dev)
 		return -ENODEV;
-
-#ifdef CONFIG_LGE_USB_GADGET
-	if (!dev) {
-		value = -ENODEV;
-		goto err;
-	}
-#endif
 	okcar_mode = in_okcar_mode(cdev);
 	if (!okcar_mode && b_requestType == (USB_DIR_OUT | USB_TYPE_VENDOR)) {
 		if (b_request == ACCESSORY_START) {
