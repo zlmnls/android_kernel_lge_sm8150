@@ -427,6 +427,12 @@ static void acc_complete_set_string(struct usb_ep *ep, struct usb_request *req)
 					dev->string_index);
 		return;
 	}
+	
+	if (!length) {
+		pr_debug("zero length for accessory string index %d\n",
+						dev->string_index);
+		return;
+	}
 	if (length >= ACC_STRING_SIZE)
 		length = ACC_STRING_SIZE - 1;
 
