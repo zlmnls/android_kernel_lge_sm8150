@@ -159,7 +159,7 @@ static struct usb_ss_ep_comp_descriptor acc_superspeed_in_comp_desc = {
 	.bDescriptorType =	USB_DT_SS_ENDPOINT_COMP,
 
 	/* the following 2 values can be tweaked if necessary */
-	.bMaxBurst =		8, 
+	/* .bMaxBurst =		0, */
 	/* .bmAttributes =	0, */
 };
 
@@ -176,7 +176,7 @@ static struct usb_ss_ep_comp_descriptor acc_superspeed_out_comp_desc = {
 	.bDescriptorType =	USB_DT_SS_ENDPOINT_COMP,
 
 	/* the following 2 values can be tweaked if necessary */
-	.bMaxBurst =		8, 
+	/* .bMaxBurst =		0, */
 	/* .bmAttributes =	0, */
 };
 
@@ -396,7 +396,6 @@ static void acc_complete_set_string(struct usb_ep *ep, struct usb_request *req)
 	struct acc_dev	*dev = ep->driver_data;
 	char *string_dest = NULL;
 	int length = req->actual;
-	unsigned long flags;
 
 	if (req->status != 0) {
 		pr_err("acc_complete_set_string, err %d\n", req->status);
@@ -422,25 +421,22 @@ static void acc_complete_set_string(struct usb_ep *ep, struct usb_request *req)
 	case ACCESSORY_STRING_SERIAL:
 		string_dest = dev->serial;
 		break;
-	default:
+	}
+	if (string_dest) {
+		unsigned long flags;
+
+		if (length >= ACC_STRING_SIZE)
+			length = ACC_STRING_SIZE - 1;
+
+		spin_lock_irqsave(&dev->lock, flags);
+		memcpy(string_dest, req->buf, length);
+		/* ensure zero termination */
+		string_dest[length] = 0;
+		spin_unlock_irqrestore(&dev->lock, flags);
+	} else {
 		pr_err("unknown accessory string index %d\n",
-					dev->string_index);
-		return;
+			dev->string_index);
 	}
-	if (!length) {
-		pr_debug("zero length for accessory string index %d\n",
-						dev->string_index);
-		return;
-	}
-
-	if (length >= ACC_STRING_SIZE)
-		length = ACC_STRING_SIZE - 1;
-
-	spin_lock_irqsave(&dev->lock, flags);
-	memcpy(string_dest, req->buf, length);
-	/* ensure zero termination */
-	string_dest[length] = 0;
-	spin_unlock_irqrestore(&dev->lock, flags);
 }
 
 static void acc_complete_set_hid_report_desc(struct usb_ep *ep,
@@ -668,7 +664,8 @@ static ssize_t acc_read(struct file *fp, char __user *buf,
 {
 	struct acc_dev *dev = fp->private_data;
 	struct usb_request *req;
-	ssize_t r = count, xfer,len;
+	ssize_t r = count, xfer;
+	ssize_t data_length;
 	int ret = 0;
 
 	pr_debug("acc_read(%zu)\n", count);
@@ -689,14 +686,20 @@ static ssize_t acc_read(struct file *fp, char __user *buf,
 		goto done;
 	}
 
-
+	if (!dev->rx_req[0]) {
+		pr_warn("acc_read: USB request already handled/freed");
+		r = -EINVAL;
+		goto done;
+	}
 
 	/*
 	 * Calculate the data length by considering termination character.
 	 * Then compansite the difference of rounding up to
 	 * integer multiple of maxpacket size.
 	 */
-	len = ALIGN(count, dev->ep_out->maxpacket);
+	data_length = count;
+	data_length += dev->ep_out->maxpacket - 1;
+	data_length -= data_length % dev->ep_out->maxpacket;
 
 	if (dev->rx_done) {
 		// last req cancelled. try to get it.
@@ -707,7 +710,7 @@ static ssize_t acc_read(struct file *fp, char __user *buf,
 requeue_req:
 	/* queue a request */
 	req = dev->rx_req[0];
-	req->length = len;
+	req->length = data_length;
 	dev->rx_done = 0;
 	ret = usb_ep_queue(dev->ep_out, req, GFP_KERNEL);
 	if (ret < 0) {
